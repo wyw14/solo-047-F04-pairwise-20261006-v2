@@ -54,6 +54,7 @@ func buildServices(cfg config) (*api.Services, error) {
 	telemetryRepository := telemetry.NewRepository()
 	mutes := telemetry.NewMuteManager(now)
 	admission := incident.NewAdmissionService(mutes)
+	dispatcher := incident.NewDispatcher(incident.DefaultPolicy(), now, nil)
 	repeaterIncidents := incident.NewRepeaterLifecycle()
 	healthProjector := repeater.NewHealthProjector(repeaterIncidents, 85)
 	repeaterR07, err := repeater.New("R07", now())
@@ -119,7 +120,7 @@ func buildServices(cfg config) (*api.Services, error) {
 		Repeaters: map[string]*repeater.Repeater{"R07": repeaterR07}, Topology: topologies,
 		OTDR: otdrService, Switchovers: switchovers, Permits: permits, Receipts: receipts,
 		Acceptance: acceptance, Telemetry: ingestor, TelemetryRepository: telemetryRepository, Admission: admission,
-		Classifier: incident.NewClassifier(), Correlator: otdr.NewCorrelator(), Health: health, Station: station,
+		Classifier: incident.NewClassifier(), Dispatcher: dispatcher, Correlator: otdr.NewCorrelator(), Health: health, Station: station,
 		WetPlantTests: wetPlantTests, Ramps: ramps, Assets: assets,
 		RepeaterHealth: healthProjector, Actuator: actuator,
 		Tests: make(map[string]*repair.TestSession), Incidents: make(map[string]*incident.Incident),

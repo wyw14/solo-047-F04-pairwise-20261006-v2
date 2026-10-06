@@ -38,6 +38,7 @@ type Services struct {
 	TelemetryRepository *telemetry.Repository
 	Admission           *incident.AdmissionService
 	Classifier          *incident.Classifier
+	Dispatcher          *incident.Dispatcher
 	Correlator          *otdr.Correlator
 	Health              *landing.HealthService
 	Station             *landing.Station
@@ -114,9 +115,19 @@ func (s *Services) Incident(id, spanID string) *incident.Incident {
 	current := s.Incidents[id]
 	if current == nil {
 		current = incident.New(id, spanID, s.Clock.Now().Add(10*time.Second), s.Clock.Now())
+		if s.Admission != nil && s.Admission.Muted(spanID) && s.Dispatcher != nil {
+			s.Dispatcher.MarkMuted(current, true)
+		}
 		s.Incidents[id] = current
 	}
 	return current
+}
+
+// GetIncident returns an existing case without creating one.
+func (s *Services) GetIncident(id string) *incident.Incident {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Incidents[id]
 }
 
 func (s *Services) TelemetryHistory(assetID string) []telemetry.Sample {

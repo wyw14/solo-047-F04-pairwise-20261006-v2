@@ -46,6 +46,7 @@ func NewServer(services *Services) *Server {
 		r.Post("/spans/{id}/wet-plant-tests", server.startWetPlantTest)
 		r.Post("/wet-plant-tests/{id}", server.finishWetPlantTest)
 		r.Post("/spans/{id}/incidents/{incidentID}", server.updateIncident)
+		r.Get("/spans/{id}/incidents/{incidentID}", server.getIncident)
 	})
 	server.router = router
 	return server

@@ -26,7 +26,11 @@ import (
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
-	clock := fixedClock{now: time.Date(2026, 8, 24, 3, 0, 0, 0, time.UTC)}
+	return testServerWithClock(t, fixedClock{now: time.Date(2026, 8, 24, 3, 0, 0, 0, time.UTC)})
+}
+
+func testServerWithClock(t *testing.T, clock platform.Clock) *Server {
+	t.Helper()
 	ids := platform.UUIDGenerator{}
 	registry := topology.NewRegistry()
 	if _, err := registry.Register("S3", topology.PathPrimary, clock.Now()); err != nil {
@@ -67,7 +71,11 @@ func testServer(t *testing.T) *Server {
 		Switchovers: switchover.NewSessionService(drainer, activator, ids, clock.Now, time.Second),
 		Permits:     permitService, Receipts: receipts, Acceptance: acceptance,
 		Telemetry: telemetry.NewIngestor(repository, clock.Now, projector), TelemetryRepository: repository,
-		Admission: incident.NewAdmissionService(telemetry.NewMuteManager(clock.Now)),
+		Admission:  incident.NewAdmissionService(telemetry.NewMuteManager(clock.Now)),
+		Classifier: incident.NewClassifier(),
+		Dispatcher: incident.NewDispatcher(incident.DefaultPolicy(), clock.Now, nil),
+		Correlator: otdr.NewCorrelator(),
+		Incidents:  make(map[string]*incident.Incident),
 	}
 	return NewServer(services)
 }

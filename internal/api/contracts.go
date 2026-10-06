@@ -76,4 +76,11 @@ type IncidentRequest struct {
 	TraceID      string  `json:"trace_id"`
 	DistanceKM   float64 `json:"distance_km"`
 	RequiresPeer bool    `json:"requires_peer"`
+	// Actor is the on-call person taking over, reassigning, adding evidence
+	// or issuing the recovery notice.
+	Actor string `json:"actor"`
+	// Role is the target duty role for reassign: responder|lead|commander|director.
+	Role string `json:"role"`
+	// Note carries supplementary evidence or a recovery remark.
+	Note string `json:"note"`
 }
