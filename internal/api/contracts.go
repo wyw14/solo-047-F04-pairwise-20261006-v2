@@ -76,4 +76,8 @@ type IncidentRequest struct {
 	TraceID      string  `json:"trace_id"`
 	DistanceKM   float64 `json:"distance_km"`
 	RequiresPeer bool    `json:"requires_peer"`
+	Severity     string  `json:"severity"`
+	Operator     string  `json:"operator"`
+	Kind         string  `json:"kind"`
+	Detail       string  `json:"detail"`
 }

@@ -38,6 +38,7 @@ type Services struct {
 	TelemetryRepository *telemetry.Repository
 	Admission           *incident.AdmissionService
 	Classifier          *incident.Classifier
+	Desk                *incident.Desk
 	Correlator          *otdr.Correlator
 	Health              *landing.HealthService
 	Station             *landing.Station

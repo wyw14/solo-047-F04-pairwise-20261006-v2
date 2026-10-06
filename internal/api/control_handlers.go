@@ -67,7 +67,11 @@ func (s *Server) admitAlarm(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) listAlarms(writer http.ResponseWriter, request *http.Request) {
-	writeJSON(writer, http.StatusOK, map[string]any{"items": s.services.Admission.Accepted(chi.URLParam(request, "id"))})
+	spanID := chi.URLParam(request, "id")
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"items":      s.services.Admission.Accepted(spanID),
+		"suppressed": s.services.Admission.Suppressed(spanID),
+	})
 }
 
 func (s *Server) startWetPlantTest(writer http.ResponseWriter, request *http.Request) {
@@ -89,6 +93,11 @@ func (s *Server) finishWetPlantTest(writer http.ResponseWriter, request *http.Re
 	writeJSON(writer, http.StatusOK, snapshot)
 }
 
+func (s *Server) getIncident(writer http.ResponseWriter, request *http.Request) {
+	current := s.services.Incident(chi.URLParam(request, "incidentID"), chi.URLParam(request, "id"))
+	writeJSON(writer, http.StatusOK, current.Snapshot())
+}
+
 func (s *Server) updateIncident(writer http.ResponseWriter, request *http.Request) {
 	spanID := chi.URLParam(request, "id")
 	incidentID := chi.URLParam(request, "incidentID")
@@ -98,23 +107,53 @@ func (s *Server) updateIncident(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	current := s.services.Incident(incidentID, spanID)
+	now := s.services.Clock.Now()
+	var snapshot incident.Snapshot
 	switch input.Action {
 	case "local-complete":
-		s.services.Classifier.LocalComplete(current, input.RequiresPeer, s.services.Clock.Now())
+		snapshot = s.services.Classifier.LocalComplete(current, input.RequiresPeer, now)
 	case "peer-evidence":
 		pair := s.services.Correlator.Add(otdr.Evidence{
 			IncidentID: incidentID, StationID: input.StationID, TraceID: input.TraceID,
-			DistanceKM: input.DistanceKM, ObservedAt: s.services.Clock.Now(),
+			DistanceKM: input.DistanceKM, ObservedAt: now,
 		})
 		_ = s.services.Correlator.Pair(incidentID)
 		if pair.Complete || input.StationID != "" {
-			s.services.Classifier.PeerEvidence(current, s.services.Clock.Now())
+			s.services.Classifier.PeerEvidence(current, now)
 		}
+		snapshot = current.Snapshot()
 	case "expire":
-		s.services.Classifier.Expire(current, s.services.Clock.Now().Add(11*time.Second))
+		snapshot = s.services.Classifier.Expire(current, now.Add(11*time.Second))
+	case "escalate":
+		severity, ok := incident.ParseSeverity(input.Severity)
+		if !ok {
+			writeJSON(writer, http.StatusBadRequest, ErrorResponse{Error: "unsupported severity"})
+			return
+		}
+		snapshot = s.services.Desk.Escalate(current, severity, now)
+	case "claim":
+		if input.Operator == "" {
+			writeJSON(writer, http.StatusBadRequest, ErrorResponse{Error: "operator is required"})
+			return
+		}
+		snapshot = s.services.Desk.Claim(current, input.Operator, now)
+	case "reassign":
+		if input.Operator == "" {
+			writeJSON(writer, http.StatusBadRequest, ErrorResponse{Error: "operator is required"})
+			return
+		}
+		snapshot = s.services.Desk.Reassign(current, input.Operator, now)
+	case "add-evidence":
+		snapshot = s.services.Desk.AddEvidence(current, input.Kind, input.Detail, input.Operator, now)
+	case "recover":
+		snapshot = s.services.Desk.Recover(current, input.Operator, input.Detail, now)
 	default:
 		writeJSON(writer, http.StatusBadRequest, ErrorResponse{Error: "unsupported incident action"})
 		return
 	}
-	writeJSON(writer, http.StatusOK, current.Snapshot())
+	if err := s.services.Persist("incident", incidentID, snapshot); err != nil {
+		writeError(writer, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, snapshot)
 }

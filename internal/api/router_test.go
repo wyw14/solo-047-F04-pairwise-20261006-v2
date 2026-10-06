@@ -57,6 +57,7 @@ func testServer(t *testing.T) *Server {
 	projector := repeater.NewHealthProjector(lifecycle, 85)
 	projector.Register(repeaterAsset)
 	repository := telemetry.NewRepository()
+	mutes := telemetry.NewMuteManager(clock.Now)
 	acceptance := repair.NewAcceptanceService(switchover.NewRestorer(drainer, activator, registry, ids, clock.Now), clock.Now)
 	acceptance.Register("S3", target, path)
 	services := &Services{
@@ -67,7 +68,9 @@ func testServer(t *testing.T) *Server {
 		Switchovers: switchover.NewSessionService(drainer, activator, ids, clock.Now, time.Second),
 		Permits:     permitService, Receipts: receipts, Acceptance: acceptance,
 		Telemetry: telemetry.NewIngestor(repository, clock.Now, projector), TelemetryRepository: repository,
-		Admission: incident.NewAdmissionService(telemetry.NewMuteManager(clock.Now)),
+		Admission: incident.NewAdmissionService(mutes), Classifier: incident.NewClassifier(),
+		Desk: incident.NewDesk(incident.DefaultPolicy(), mutes), Correlator: otdr.NewCorrelator(),
+		Incidents: make(map[string]*incident.Incident),
 	}
 	return NewServer(services)
 }
@@ -106,5 +109,86 @@ func TestHealthAndScanHTTPFlow(t *testing.T) {
 	server.Handler().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/system/status", nil))
 	if status.Code != http.StatusOK {
 		t.Fatalf("status code=%d body=%s", status.Code, status.Body.String())
+	}
+}
+
+func TestIncidentEscalationHTTPFlow(t *testing.T) {
+	server := testServer(t)
+	act := func(input IncidentRequest) incident.Snapshot {
+		t.Helper()
+		body, _ := json.Marshal(input)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(
+			http.MethodPost, "/api/spans/S3/incidents/INC-1", bytes.NewReader(body)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("action %s status=%d body=%s", input.Action, response.Code, response.Body.String())
+		}
+		var snapshot incident.Snapshot
+		if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		return snapshot
+	}
+
+	snapshot := act(IncidentRequest{Action: "escalate", Severity: "critical"})
+	if snapshot.Severity != incident.SeverityCritical || snapshot.Assignment.Role != incident.RoleEngineer {
+		t.Fatalf("unexpected escalation: %+v", snapshot)
+	}
+
+	snapshot = act(IncidentRequest{Action: "claim", Operator: "alice"})
+	if snapshot.Assignment.Operator != "alice" {
+		t.Fatalf("operator=%s, want alice", snapshot.Assignment.Operator)
+	}
+
+	snapshot = act(IncidentRequest{Action: "reassign", Operator: "bob"})
+	if snapshot.Assignment.Operator != "bob" {
+		t.Fatalf("operator=%s, want bob", snapshot.Assignment.Operator)
+	}
+
+	snapshot = act(IncidentRequest{Action: "add-evidence", Kind: "otdr-trace", Detail: "break at 42.1km", Operator: "bob"})
+	if len(snapshot.Evidence) != 1 || snapshot.Evidence[0].Kind != "otdr-trace" {
+		t.Fatalf("unexpected evidence: %+v", snapshot.Evidence)
+	}
+
+	snapshot = act(IncidentRequest{Action: "recover", Operator: "bob", Detail: "spliced and restored"})
+	if snapshot.State != incident.StateResolved {
+		t.Fatalf("state=%s, want %s", snapshot.State, incident.StateResolved)
+	}
+	last := snapshot.Notices[len(snapshot.Notices)-1]
+	if last.Kind != "recovery" || len(last.Recipients) != 2 {
+		t.Fatalf("unexpected recovery notice: %+v", last)
+	}
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/spans/S3/incidents/INC-1", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get incident status=%d body=%s", response.Code, response.Body.String())
+	}
+	var stored incident.Snapshot
+	if err := json.Unmarshal(response.Body.Bytes(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != incident.StateResolved || len(stored.Assignments) == 0 || len(stored.Evidence) != 1 {
+		t.Fatalf("case progress not preserved: %+v", stored)
+	}
+}
+
+func TestIncidentRejectsInvalidActions(t *testing.T) {
+	server := testServer(t)
+	post := func(input IncidentRequest) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(input)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(
+			http.MethodPost, "/api/spans/S3/incidents/INC-2", bytes.NewReader(body)))
+		return response
+	}
+	if response := post(IncidentRequest{Action: "claim"}); response.Code != http.StatusBadRequest {
+		t.Fatalf("claim without operator status=%d, want 400", response.Code)
+	}
+	if response := post(IncidentRequest{Action: "escalate", Severity: "bogus"}); response.Code != http.StatusBadRequest {
+		t.Fatalf("escalate with bad severity status=%d, want 400", response.Code)
+	}
+	if response := post(IncidentRequest{Action: "detonate"}); response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown action status=%d, want 400", response.Code)
 	}
 }
